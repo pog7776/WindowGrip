@@ -1,3 +1,6 @@
+[![CMake Windows](https://github.com/pog7776/WindowGrip/actions/workflows/cmake-single-platform.yml/badge.svg)](https://github.com/pog7776/WindowGrip/actions/workflows/cmake-single-platform.yml)
+
+---
 
 # TODO
 
