@@ -51,23 +51,34 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 int delta_x = mouse_data->pt.x - g_initial_mouse.x;
                 int delta_y = mouse_data->pt.y - g_initial_mouse.y;
 
+                RECT target_rect;
+                GetWindowRect(g_target_hwnd, &target_rect);
+
                 // Amplify drag vectors depending on which direction they pull
-                int start_width = g_initial_rect.right - g_initial_rect.left;
-                int start_height = g_initial_rect.bottom - g_initial_rect.top;
+                int start_width = target_rect.right - target_rect.left;
+                int start_height = target_rect.bottom - target_rect.top;
 
                 // Adjust size based on relative displacement from the center pivot
                 int current_width = start_width + (delta_x * 2);
                 int current_height = start_height + (delta_y * 2);
 
                 // Force strict 1:1 Aspect Ratio constraint
-                int target_size = (std::max)({current_width, current_height, 150}); // Min clamp 150px
+                //int target_size = (std::max)({current_width, current_height, 150}); // Min clamp 150px
+                int target_size = current_width * current_height;
 
-                int new_left = g_center_x - (target_size / 2);
-                int new_top = g_center_y - (target_size / 2);
+                int new_left = g_center_x - (current_width / 2);
+                int new_top = g_center_y - (current_height / 2);
 
                 // Update size manually. No flickering because Windows isn't fighting us.
-                SetWindowPos(g_target_hwnd, NULL, new_left, new_top, target_size, target_size, 
-                             SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOCOPYBITS);
+                RECT before_rect;
+                RECT after_rect;
+
+                GetWindowRect(g_target_hwnd, &before_rect);
+                SetWindowPos(g_target_hwnd, NULL, new_left, new_top, current_width, current_height, SWP_NOZORDER | SWP_NOACTIVATE);
+                GetWindowRect(g_target_hwnd, &after_rect);
+
+                std::cout << "Target Size: " << target_size << " | Before Size: " << (before_rect.right - before_rect.left) << " | After Size: " << (after_rect.right - after_rect.left) << std::endl;
+                std::cout << "Change: " << (after_rect.right - after_rect.left - (before_rect.right - before_rect.left)) << std::endl;
 
                 return 1; // Eat the mouse movement
             } else {
