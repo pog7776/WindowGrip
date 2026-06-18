@@ -1,0 +1,39 @@
+#include <windows.h>
+#include <iostream>
+
+int main() {
+    // Change this filename in CMake/main if you still have file locks active!
+    HMODULE hModule = LoadLibraryW(L"resizer_hook.dll");
+    if (!hModule) {
+        std::cerr << "Failed to load DLL! Error: " << GetLastError() << std::endl;
+        return 1;
+    }
+
+    HOOKPROC hookProc = (HOOKPROC)GetProcAddress(hModule, "MessageProc");
+    if (!hookProc) {
+        std::cerr << "Failed to find MessageProc entrypoint!" << std::endl;
+        return 1;
+    }
+
+    // Installs a message monitor hook to perform the cross-process injection
+    HHOOK hookHandle = SetWindowsHookExW(WH_GETMESSAGE, hookProc, hModule, 0);
+    if (!hookHandle) {
+        std::cerr << "Global injection failed! Error: " << GetLastError() << std::endl;
+        return 1;
+    }
+
+    std::cout << "=========================================" << std::endl;
+    std::cout << " True Real-Time Subclassed Resizer Active!" << std::endl;
+    std::cout << " -> Run CLion as ADMIN" << std::endl;
+    std::cout << " -> Hold ALT while dragging a window edge." << std::endl;
+    std::cout << "=========================================" << std::endl;
+
+    MSG msg;
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
+
+    UnhookWindowsHookEx(hookHandle);
+    return 0;
+}
