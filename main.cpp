@@ -3,88 +3,134 @@
 #include <iostream>
 #include <algorithm>
 
-// Global tracking variables
-HWND g_tracked_hwnd = NULL;
+HHOOK g_mouse_hook = NULL;
+HWND g_target_hwnd = NULL;
+RECT g_initial_rect = {0};
+POINT g_initial_mouse = {0};
 int g_center_x = 0;
 int g_center_y = 0;
-bool g_is_tracking = false;
+bool g_is_resizing = false;
 
-// The callback function that intercepts window adjustments safely
-void CALLBACK WinEventProc(
-    HWINEVENTHOOK hWinEventHook,
-    DWORD event,
-    HWND hwnd,
-    LONG idObject,
-    LONG idChild,
-    DWORD dwEventThread,
-    DWORD dwmsEventTime
-) {
-    // Only care about valid top-level windows dragging
-    if (idObject != OBJID_WINDOW || hwnd == NULL) return;
-
-    // Check if the user is holding the ALT key
-    if ((GetAsyncKeyState(VK_MENU) & 0x8000) == 0) {
-        g_is_tracking = false;
-        g_tracked_hwnd = NULL;
-        return;
+// Gracefully terminates the layout loop and tells the target window to commit its state
+void EndResizeLoop() {
+    if (g_is_resizing && g_target_hwnd) {
+        // Inform the target window that the sizing loop has finished
+        SendMessageW(g_target_hwnd, WM_EXITSIZEMOVE, 0, 0);
     }
+    g_is_resizing = false;
+    g_target_hwnd = NULL;
+}
 
-    if (event == EVENT_SYSTEM_MOVESIZESTART) {
-        RECT rect;
-        if (GetWindowRect(hwnd, &rect)) {
-            g_tracked_hwnd = hwnd;
-            int width = rect.right - rect.left;
-            int height = rect.bottom - rect.top;
-            g_center_x = rect.left + (width / 2);
-            g_center_y = rect.top + (height / 2);
-            g_is_tracking = true;
+LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode >= 0) {
+        MSLLHOOKSTRUCT* mouse_data = (MSLLHOOKSTRUCT*)lParam;
+
+        // 1. Intercept left-clicks
+        if (wParam == WM_LBUTTONDOWN) {
+            if (GetAsyncKeyState(VK_MENU) & 0x8000) { // ALT key
+                HWND hit_window = WindowFromPoint(mouse_data->pt);
+                if (hit_window) {
+                    HWND parent = GetAncestor(hit_window, GA_ROOT);
+
+                    // Filter out the desktop background and system tray/taskbar
+                    if (parent && parent != GetDesktopWindow() && parent != GetShellWindow()) {
+                        RECT rect;
+                        if (GetWindowRect(parent, &rect)) {
+
+                            // OPTIONAL EDGE-ONLY CHECK:
+                            // If you want to limit the trigger to a 30px border edge, uncomment this:
+                            /*
+                            int edge_pad = 30;
+                            bool near_edge = (mouse_data->pt.x < rect.left + edge_pad || mouse_data->pt.x > rect.right - edge_pad ||
+                                              mouse_data->pt.y < rect.top + edge_pad || mouse_data->pt.y > rect.bottom - edge_pad);
+                            if (!near_edge) return CallNextHookEx(g_mouse_hook, nCode, wParam, lParam);
+                            */
+
+                            g_target_hwnd = parent;
+                            g_initial_rect = rect;
+                            g_initial_mouse = mouse_data->pt;
+
+                            int width = rect.right - rect.left;
+                            int height = rect.bottom - rect.top;
+
+                            g_center_x = rect.left + (width / 2);
+                            g_center_y = rect.top + (height / 2);
+
+                            g_is_resizing = true;
+
+                            // CRITICAL FIX: Tell the application layout engine that a sizing session has started.
+                            // This signals frameworks like Electron to cooperate with geometry changes.
+                            SendMessageW(g_target_hwnd, WM_ENTERSIZEMOVE, 0, 0);
+
+                            return 1; // Eat the click completely
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Custom loop execution on mouse movement
+        if (g_is_resizing && wParam == WM_MOUSEMOVE) {
+            if (GetAsyncKeyState(VK_MENU) & 0x8000) {
+                int delta_x = mouse_data->pt.x - g_initial_mouse.x;
+                int delta_y = mouse_data->pt.y - g_initial_mouse.y;
+
+                int start_width = g_initial_rect.right - g_initial_rect.left;
+                int start_height = g_initial_rect.bottom - g_initial_rect.top;
+
+                int current_width = start_width + (delta_x * 2);
+                int current_height = start_height + (delta_y * 2);
+
+                // Enforce uniform square behavior with a safe minimum bounds clamp
+                int target_size = (std::max)({current_width, current_height, 150});
+
+                // Compute bounding box centered cleanly around our static center-pivot point
+                RECT target_rect;
+                target_rect.left = g_center_x - (target_size / 2);
+                target_rect.top = g_center_y - (target_size / 2);
+                target_rect.right = target_rect.left + target_size;
+                target_rect.bottom = target_rect.top + target_size;
+
+                // CRITICAL FIX: Feed the structural dimensions directly into the target app's procedure.
+                // Windows marshals this system message natively so the target window caches the new layout size.
+                SendMessageW(g_target_hwnd, WM_SIZING, WMSZ_BOTTOMRIGHT, (LPARAM)&target_rect);
+
+                // SWP_FRAMECHANGED forces the target window frame/chrome to recalculate cleanly
+                SetWindowPos(g_target_hwnd, NULL,
+                             target_rect.left,
+                             target_rect.top,
+                             target_rect.right - target_rect.left,
+                             target_rect.bottom - target_rect.top,
+                             SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+                return 1; // Eat the mouse movement
+            } else {
+                EndResizeLoop();
+            }
+        }
+
+        // 3. Loop termination
+        if (wParam == WM_LBUTTONUP) {
+            if (g_is_resizing) {
+                EndResizeLoop();
+                return 1;
+            }
         }
     }
-    else if (event == EVENT_OBJECT_LOCATIONCHANGE && g_is_tracking && hwnd == g_tracked_hwnd) {
-        RECT rect;
-        if (GetWindowRect(hwnd, &rect)) {
-            int width = rect.right - rect.left;
-            int height = rect.bottom - rect.top;
-
-            int target_size = (std::max)(width, height);
-            int new_left = g_center_x - (target_size / 2);
-            int new_top = g_center_y - (target_size / 2);
-
-            // Avoid updating if the window is already in the correct state
-            if (rect.left == new_left && rect.top == new_top && width == target_size && height == target_size) {
-                return;
-            }
-
-            // DeferWindowPos updates the window boundaries atomically in the Win32 kernel,
-            // which breaks the recursive event feedback loop and prevents visual stuttering.
-            HDWP hdwp = BeginDeferWindowPos(1);
-            if (hdwp) {
-                hdwp = DeferWindowPos(hdwp, hwnd, NULL, new_left, new_top, target_size, target_size, SWP_NOZORDER | SWP_NOACTIVATE);
-                EndDeferWindowPos(hdwp);
-            }
-        }
-    }
-    else if (event == EVENT_SYSTEM_MOVESIZEEND) {
-        g_is_tracking = false;
-        g_tracked_hwnd = NULL;
-    }
+    return CallNextHookEx(g_mouse_hook, nCode, wParam, lParam);
 }
 
 int main() {
-    // Register event listeners for window adjustments safely from user space
-    HWINEVENTHOOK hStart = SetWinEventHook(EVENT_SYSTEM_MOVESIZESTART, EVENT_SYSTEM_MOVESIZESTART, NULL, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
-    HWINEVENTHOOK hChange = SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_LOCATIONCHANGE, NULL, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
-    HWINEVENTHOOK hEnd = SetWinEventHook(EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZEEND, NULL, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+    g_mouse_hook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc, GetModuleHandle(NULL), 0);
 
-    if (!hStart || !hChange || !hEnd) {
-        std::cerr << "Failed to initialize accessibility hooks." << std::endl;
+    if (!g_mouse_hook) {
+        std::cerr << "Failed to install low-level mouse hook." << std::endl;
         return 1;
     }
 
     std::cout << "=========================================" << std::endl;
-    std::cout << " Safe Center-Pivot Resizer Online         " << std::endl;
-    std::cout << " -> No DLL Injection, No System Freezes.  " << std::endl;
-    std::cout << " -> Hold ALT while dragging a window edge." << std::endl;
+    std::cout << " Corrected Center-Pivot Resizer Online   " << std::endl;
+    std::cout << " -> Sizing lifecycle synchronization active." << std::endl;
     std::cout << "=========================================" << std::endl;
 
     MSG msg;
@@ -93,8 +139,6 @@ int main() {
         DispatchMessage(&msg);
     }
 
-    UnhookWinEvent(hStart);
-    UnhookWinEvent(hChange);
-    UnhookWinEvent(hEnd);
+    UnhookWindowsHookEx(g_mouse_hook);
     return 0;
 }
