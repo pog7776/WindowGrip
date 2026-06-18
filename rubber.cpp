@@ -13,6 +13,9 @@ int g_offset_x = 0; // Caches original edge offset
 int g_offset_y = 0; // Caches original edge offset
 bool g_is_resizing = false;
 
+const int minimum_width = 200;
+const int minimum_height = 200;
+
 LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode >= 0) {
         MSLLHOOKSTRUCT* mouse_data = (MSLLHOOKSTRUCT*)lParam;
@@ -54,8 +57,8 @@ LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 int current_width = (std::abs(mouse_data->pt.x - g_center_x) + g_offset_x) * 2;
                 int current_height = (std::abs(mouse_data->pt.y - g_center_y) + g_offset_y) * 2;
 
-                if (current_width < 100)  current_width = 100;
-                if (current_height < 100) current_height = 100;
+                if (current_width < minimum_width)  current_width = minimum_width;
+                if (current_height < minimum_height) current_height = minimum_height;
 
                 int new_left = g_center_x - (current_width / 2);
                 int new_top = g_center_y - (current_height / 2);
